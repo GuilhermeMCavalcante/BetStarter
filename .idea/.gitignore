@@ -1,0 +1,23 @@
+# Segredos
+.streamlit/secrets.toml
+.env
+*.env
+
+# Ambientes Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# IDE / sistema
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Arquivos compactados locais
+*.rar
+*.zip
