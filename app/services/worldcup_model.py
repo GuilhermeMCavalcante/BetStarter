@@ -10,8 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from app.models.entities import Fixture, Odd, TeamRating, TeamRecentStat
 from datetime import datetime
 
-# Rating inicial manual em escala 50-100.
-# Serve como prior para selecoes na Copa, especialmente antes de haver estatistica suficiente no torneio.
+# Manual prior ratings on a 50–100 scale. Used before sufficient in-tournament statistics accumulate.
 DEFAULT_TEAM_RATINGS = {
     "Argentina": 92, "France": 91, "Brazil": 90, "Spain": 89, "England": 88,
     "Portugal": 87, "Germany": 86, "Netherlands": 85, "Belgium": 84, "Uruguay": 83,
@@ -85,12 +84,12 @@ def poisson_over_probability(total_lambda: float, line: float) -> float:
         return 1 - sum(poisson_pmf(k, total_lambda) for k in range(0, 2))
     if line == 2.5:
         return 1 - sum(poisson_pmf(k, total_lambda) for k in range(0, 3))
-    raise ValueError("Linha nao suportada")
+    raise ValueError(f"Unsupported over line: {line}")
 
 def poisson_under_probability(total_lambda: float, line: float) -> float:
     if line == 3.5:
         return sum(poisson_pmf(k, total_lambda) for k in range(0, 4))
-    raise ValueError("Linha nao suportada")
+    raise ValueError(f"Unsupported under line: {line}")
 
 def btts_probability(home_lambda: float, away_lambda: float) -> float:
     return (1 - exp(-home_lambda)) * (1 - exp(-away_lambda))
@@ -123,11 +122,10 @@ def estimate_expected_goals(
     away_rating = get_rating(db, fixture.away_team)
     diff = home_rating - away_rating
 
-    # Base de Copa: geralmente mais conservadora que ligas nacionais.
+    # Tournament baseline is lower-scoring than domestic leagues.
     base_home = 1.22
     base_away = 1.05
 
-    # Ajuste por diferenca de rating. Limite evita lambdas absurdos.
     home_lambda = base_home + clamp(diff / 35.0, -0.45, 0.65)
     away_lambda = base_away - clamp(diff / 42.0, -0.55, 0.45)
 
@@ -141,9 +139,9 @@ def estimate_expected_goals(
         home_lambda = (home_lambda * (1 - weight)) + (stat_home * weight)
         away_lambda = (away_lambda * (1 - weight)) + (stat_away * weight)
         confidence += min(18, min(home_stats.matches, away_stats.matches) * 3)
-        reason_bits.append(f"stats recentes usadas ({min(home_stats.matches, away_stats.matches)} jogos)")
+        reason_bits.append(f"recent stats used ({min(home_stats.matches, away_stats.matches)} matches)")
     else:
-        reason_bits.append("sem stats suficientes; usando rating + prior conservador")
+        reason_bits.append("no sufficient stats; using rating prior only")
 
     return clamp(home_lambda, 0.2, 3.4), clamp(away_lambda, 0.15, 3.0), "; ".join(reason_bits), confidence
 
@@ -185,15 +183,15 @@ def calculate_market_probability(
     elif market == "Both Teams Score" and selection == "No":
         poisson_prob = 1 - btts_probability(home_lam, away_lam)
     else:
-        return ModelOutput(0.0, home_lam, away_lam, 0, "mercado nao suportado")
+        return ModelOutput(0.0, home_lam, away_lam, 0, "unsupported market")
 
     if trend is not None:
         probability = (poisson_prob * 0.72) + (trend * 0.28)
-        reason += f"; poisson={poisson_prob:.1%}; tendencia={trend:.1%}"
+        reason += f"; poisson={poisson_prob:.1%}; trend={trend:.1%}"
     else:
         probability = poisson_prob
         reason += f"; poisson={poisson_prob:.1%}"
 
-    # Margem conservadora para selecoes: reduz exagero do modelo v1.
+    # Conservative shrinkage to dampen model overconfidence in early-tournament samples.
     probability = (probability * 0.96) + 0.02
     return ModelOutput(clamp(probability), home_lam, away_lam, min(confidence, 92), reason)

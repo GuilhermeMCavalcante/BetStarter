@@ -1,0 +1,30 @@
+[project]
+name = "betstarter"
+version = "0.1.0"
+description = "Analytical betting recommendation engine for the FIFA World Cup"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "SQLAlchemy==2.0.36",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.1",
+    "requests==2.32.3",
+    "pandas==2.2.3",
+    "numpy==2.2.1",
+    "streamlit==1.41.1",
+    "python-dotenv==1.0.1",
+    "apscheduler==3.11.0",
+    "psycopg2-binary==2.9.12",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "dashboard"]

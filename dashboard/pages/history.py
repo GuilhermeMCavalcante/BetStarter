@@ -1,99 +1,85 @@
 import sys
-import subprocess
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR))
 
-import pandas as pd
 import streamlit as st
-from sqlalchemy import func
-from app.config import settings, validate_world_cup_scope
-from app.db.init_db import init_db
+
 from app.db.session import SessionLocal
 from app.models.entities import Fixture
 from app.services.api_football import ApiFootballClient
 from app.services.collector import upsert_fixture
 
-st.set_page_config(page_title="Histórico", layout="wide")
-st.subheader("Histórico da Copa")
+st.set_page_config(page_title="History — BetStarter", layout="wide", page_icon="📅")
 
-season_history = st.selectbox(
-    "Temporada histórica",
-    [2022, 2026],
-    index=0,
-)
+st.title("Match History")
+st.caption("Historical World Cup fixtures. Import past editions to enable backtesting.")
+
+FINISHED_STATUSES = {"FT", "AET", "PEN"}
+
+season_history = st.selectbox("Season", [2022, 2026], index=0)
 
 with SessionLocal() as db:
     history_rows = (
         db.query(Fixture)
-        .filter(
-            Fixture.league_id == 1,
-            Fixture.season == season_history,
-        )
+        .filter(Fixture.league_id == 1, Fixture.season == season_history)
         .order_by(Fixture.date.asc())
         .all()
     )
 
-if not history_rows:
-    st.info("Nenhum jogo histórico encontrado para essa temporada.")
-else:
-    history_data = []
-
-    for f in history_rows:
-        history_data.append({
-            "Data": f.date,
-            "Jogo": f"{f.home_team} x {f.away_team}",
-            "Placar": (
-                f"{f.home_goals} x {f.away_goals}"
-                if f.home_goals is not None and f.away_goals is not None
-                else "-"
-            ),
-            "Status": f.status,
-            "Home ID": f.home_team_id,
-            "Away ID": f.away_team_id,
-            "Fixture API ID": f.api_fixture_id,
-        })
-
-    history_df = pd.DataFrame(history_data)
+if history_rows:
+    finished = [f for f in history_rows if f.status in FINISHED_STATUSES]
+    pending = [f for f in history_rows if f.status not in FINISHED_STATUSES]
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Jogos", len(history_df))
-    c2.metric("Finalizados", len(history_df[history_df["Status"].isin(["FT", "AET", "PEN"])]))
-    c3.metric("Pendentes", len(history_df[~history_df["Status"].isin(["FT", "AET", "PEN"])]))
+    c1.metric("Total fixtures", len(history_rows))
+    c2.metric("Finished", len(finished))
+    c3.metric("Upcoming / TBD", len(pending))
 
-    st.dataframe(history_df, use_container_width=True)
+    history_data = [
+        {
+            "Date": f.date,
+            "Match": f"{f.home_team} × {f.away_team}",
+            "Score": f"{f.home_goals} × {f.away_goals}" if f.home_goals is not None else "-",
+            "Status": f.status,
+        }
+        for f in history_rows
+    ]
 
-st.subheader("Importar Copa do Mundo")
-season_import = st.number_input(
-    "Ano da Copa",
-    min_value=1930,
-    max_value=2030,
-    value=2022,
-    step=4,
-)
+    import pandas as pd
+    history_df = pd.DataFrame(history_data)
+    st.dataframe(
+        history_df,
+        use_container_width=True,
+        column_config={
+            "Date": st.column_config.DatetimeColumn("Date", format="DD/MM/YYYY HH:mm"),
+        },
+    )
+else:
+    st.info(f"No fixtures found for World Cup {season_history}. Import them below.")
 
-if st.button("Importar jogos da Copa"):
-    with st.spinner(f"Importando jogos da Copa {season_import}..."):
-        client = ApiFootballClient()
+st.divider()
+st.subheader("Import World Cup Season")
+st.caption("Fetch all fixtures for a past edition from API-Football and store them locally.")
 
-        rows = client.fixtures_range(
-            league=1,
-            season=int(season_import),
-            date_from=f"{int(season_import)}-01-01",
-            date_to=f"{int(season_import)}-12-31",
-        )
+season_import = st.number_input("Year", min_value=1930, max_value=2030, value=2022, step=4)
 
-        with SessionLocal() as db:
-            for row in rows:
-                upsert_fixture(
-                    db,
-                    row,
-                    league_id=1,
-                    season=int(season_import),
-                )
-
-            db.commit()
-
-    st.success(f"Copa {season_import} importada com sucesso: {len(rows)} jogos.")
+if st.button("Import fixtures", type="primary"):
+    with st.spinner(f"Fetching World Cup {season_import} fixtures from API-Football..."):
+        try:
+            client = ApiFootballClient()
+            rows = client.fixtures_range(
+                league=1,
+                season=int(season_import),
+                date_from=f"{int(season_import)}-01-01",
+                date_to=f"{int(season_import)}-12-31",
+            )
+            with SessionLocal() as db:
+                for row in rows:
+                    upsert_fixture(db, row, league_id=1, season=int(season_import))
+                db.commit()
+            st.success(f"Imported {len(rows)} fixtures for World Cup {season_import}.")
+        except Exception as exc:
+            st.error(f"Import failed: {exc}")
     st.rerun()

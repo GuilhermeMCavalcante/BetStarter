@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -7,6 +8,8 @@ from zoneinfo import ZoneInfo
 from app.config import settings
 from app.models.entities import Fixture, Odd, Recommendation, RecommendationAudit, TeamRecentStat
 from app.services.worldcup_model import calculate_market_probability, seed_team_ratings
+
+log = logging.getLogger(__name__)
 
 SUPPORTED_RECOMMENDATION_SELECTIONS = {
     ("Over/Under", "Over 0.5"),
@@ -18,6 +21,7 @@ SUPPORTED_RECOMMENDATION_SELECTIONS = {
     ("Both Teams Score", "No"),
 }
 BR_TZ = ZoneInfo("America/Sao_Paulo")
+
 
 def kelly_fraction(probability: float, odd: float) -> float:
     b = odd - 1
@@ -33,7 +37,7 @@ def confidence_label(confidence_score: int, edge: float) -> str:
         return "B"
     if confidence_score >= 62 and edge >= 0.05:
         return "C"
-    return "Baixa"
+    return "Low"
 
 
 def audit(
@@ -71,18 +75,14 @@ def audit(
 def generate_recommendations(db: Session, min_ev: float | None = None, league: int | None = None, season: int | None = None, days: int = 3, past_days: int = 0) -> int:
     min_ev = settings.min_ev if min_ev is None else min_ev
     seed_team_ratings(db)
-    #today_start = datetime.combine(datetime.now().date(), time.min)
     today_start = (datetime.now(BR_TZ).date() - timedelta(days=past_days)).isoformat()
-    date_to = (datetime.now(BR_TZ).date() + timedelta(days=days)).isoformat()
-    fixture_query = db.query(Fixture).filter(
-        Fixture.date >= today_start,
-        #Fixture.status.in_(["NS", "TBD"])
-    )
+    fixture_query = db.query(Fixture).filter(Fixture.date >= today_start)
     if league is not None:
         fixture_query = fixture_query.filter(Fixture.league_id == league)
     if season is not None:
         fixture_query = fixture_query.filter(Fixture.season == season)
     fixtures = fixture_query.order_by(Fixture.date.asc()).all()
+    log.info("Generating recommendations for %d fixtures (min_ev=%.3f)", len(fixtures), min_ev)
 
     if league is not None and season is not None:
         db.query(RecommendationAudit).filter(
@@ -115,7 +115,7 @@ def generate_recommendations(db: Session, min_ev: float | None = None, league: i
             ).limit(300).all()
 
         for odd in odds:
-            if odd.bookmaker.lower() != "superbet":
+            if odd.bookmaker.lower() != settings.target_bookmaker.lower():
                 continue
             if (odd.market, odd.selection) not in SUPPORTED_RECOMMENDATION_SELECTIONS:
                 continue
@@ -125,7 +125,7 @@ def generate_recommendations(db: Session, min_ev: float | None = None, league: i
             output = calculate_market_probability(db, fixture, home_stats, away_stats, odd.market, odd.selection)
             probability = output.probability
             if probability <= 0:
-                audit(db, fixture, odd, 0, 0, 0, 0, "REJECTED", "mercado nao suportado")
+                audit(db, fixture, odd, 0, 0, 0, 0, "REJECTED", "unsupported market")
                 continue
 
             implied = 1 / odd.odd
@@ -134,45 +134,45 @@ def generate_recommendations(db: Session, min_ev: float | None = None, league: i
 
             if output.confidence_score < 55:
                 audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                      f"Confianca baixa ({output.confidence_score}). {output.reason}")
+                      f"Low confidence ({output.confidence_score}). {output.reason}")
                 continue
 
             if odd.market == "Both Teams Score":
                 if odd.selection == "Yes":
                     if edge < 0.08 or ev < 0.15:
                         audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                              f"BTTS Yes sem valor suficiente. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
+                              f"BTTS Yes: insufficient value. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
                         continue
 
                 if odd.selection == "No":
                     if probability < 0.52:
                         audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                              f"BTTS No com probabilidade baixa ({probability:.2%}). {output.reason}")
+                              f"BTTS No: low probability ({probability:.2%}). {output.reason}")
                         continue
 
                     if edge < 0.05 or ev < 0.08:
                         audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                              f"BTTS No sem valor suficiente. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
+                              f"BTTS No: insufficient value. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
                         continue
 
             if odd.market == "Over/Under":
                 if odd.selection == "Under 3.5" and probability < 0.68:
                     audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                          f"Under 3.5 com probabilidade baixa ({probability:.2%}). {output.reason}")
+                          f"Under 3.5: low probability ({probability:.2%}). {output.reason}")
                     continue
                 if odd.selection == "Over 2.5" and probability < 0.42:
                     audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                          f"Over 2.5 com probabilidade baixa ({probability:.2%}). {output.reason}")
+                          f"Over 2.5: low probability ({probability:.2%}). {output.reason}")
                     continue
 
                 if odd.selection == "Over 1.5" and probability < 0.62:
                     audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                          f"Over 1.5 com probabilidade baixa ({probability:.2%}). {output.reason}")
+                          f"Over 1.5: low probability ({probability:.2%}). {output.reason}")
                     continue
 
                 if edge < 0.05 or ev < 0.08:
                     audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                          f"Over/Under sem valor suficiente. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
+                          f"Over/Under: insufficient value. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
                     continue
 
             values = {
@@ -213,6 +213,32 @@ def list_recommendations(db: Session, limit: int = 50, league: int | None = None
     if season is not None:
         query = query.join(Fixture, Fixture.id == Recommendation.fixture_id).filter(Fixture.season == season)
     return query.order_by(Recommendation.expected_value.desc(), Recommendation.date.asc()).limit(limit).all()
+
+
+def bet_result(market: str, selection: str, fixture) -> str:
+    """Return WIN / RED / PENDING / N/A for a completed or upcoming fixture."""
+    if not fixture or fixture.home_goals is None or fixture.away_goals is None:
+        return "PENDING"
+    total = fixture.home_goals + fixture.away_goals
+    btts = fixture.home_goals > 0 and fixture.away_goals > 0
+    over_lines = {"Over 0.5": 0.5, "Over 1.5": 1.5, "Over 2.5": 2.5, "Over 3.5": 3.5}
+    if market == "Over/Under":
+        if selection in over_lines:
+            return "WIN" if total > over_lines[selection] else "RED"
+        if selection == "Under 3.5":
+            return "WIN" if total < 3.5 else "RED"
+    if market == "Both Teams Score":
+        if selection == "Yes":
+            return "WIN" if btts else "RED"
+        if selection == "No":
+            return "WIN" if not btts else "RED"
+    return "N/A"
+
+
+def score_label(fixture) -> str:
+    if not fixture or fixture.home_goals is None:
+        return "-"
+    return f"{fixture.home_goals} × {fixture.away_goals}"
 
 
 def list_audits(db: Session, limit: int = 100, league: int | None = None, season: int | None = None, status: str | None = None):

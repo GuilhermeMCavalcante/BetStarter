@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from app.config import settings, validate_world_cup_scope
@@ -6,12 +8,14 @@ from app.db.init_db import init_db
 from app.services.collector import fetch_and_store_fixtures, fetch_and_store_odds, calculate_recent_stats
 from app.services.recommender import generate_recommendations, list_recommendations
 
-app = FastAPI(title="World Cup Bet Recommender MVP")
 
-
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     init_db()
+    yield
+
+
+app = FastAPI(title="BetStarter — World Cup Recommendation Engine", lifespan=lifespan)
 
 
 @app.get("/health")

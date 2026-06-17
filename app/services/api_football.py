@@ -10,13 +10,12 @@ from app.config import settings
 class ApiFootballClient:
     def __init__(self):
         if not settings.api_football_key:
-            raise RuntimeError("API_FOOTBALL_KEY nao configurada no .env")
+            raise RuntimeError("API_FOOTBALL_KEY is not set. Add it to your .env file.")
         self.base_url = "https://v3.football.api-sports.io"
         self.headers = {
             "x-apisports-key": settings.api_football_key,
             "x-rapidapi-host": settings.api_football_host,
         }
-
 
     def _get(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         url = f"{self.base_url}/{path.lstrip('/')}"
@@ -25,7 +24,7 @@ class ApiFootballClient:
         payload = response.json()
         errors = payload.get("errors")
         if errors:
-            raise RuntimeError(f"Erro API-Football: {errors}")
+            raise RuntimeError(f"API-Football error: {errors}")
         return payload.get("response", [])
 
     def fixtures(self, league: int, season: int, days: int = 3) -> list[dict[str, Any]]:
@@ -38,7 +37,14 @@ class ApiFootballClient:
             "to": to_date.isoformat(),
         })
 
-    def fixtures_range(self, league: int, season: int, date_from: str, date_to: str, timezone: str):
+    def fixtures_range(
+        self,
+        league: int,
+        season: int,
+        date_from: str,
+        date_to: str,
+        timezone: str = "America/Sao_Paulo",
+    ) -> list[dict[str, Any]]:
         return self._get("fixtures", {
             "league": league,
             "season": season,

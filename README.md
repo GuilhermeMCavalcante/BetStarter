@@ -1,22 +1,92 @@
-# World Cup Bet Recommender MVP
+# BetStarter
 
-MVP travado para Copa do Mundo usando API-Football v3.
+**Analytical betting recommendation engine for the FIFA World Cup 2026.**
 
-Esta versao inclui:
+> **Disclaimer:** This is a quantitative analysis tool. It does not guarantee profit. Betting involves financial risk.
 
-- Dashboard Streamlit com botao de atualizacao
-- Coleta de jogos e odds
-- Ratings iniciais das selecoes
-- Modelo v1 com Poisson + ratings + stats quando existirem
-- Filtro de EV e Edge
-- Aba de debug mostrando odds rejeitadas e motivo
-- Aba de jogos encontrados
+---
 
-> Aviso: ferramenta analitica. Nao existe garantia de lucro em apostas.
+## Overview
 
-## Instalar no Windows
+BetStarter collects live fixtures and odds from the [API-Football](https://www.api-football.com/) data provider, applies a Poisson-based statistical model with team ratings and recent match statistics, and surfaces value bets where the model's estimated probability exceeds the bookmaker's implied probability by a meaningful edge.
 
-Dentro da pasta do projeto:
+### How the model works
+
+1. Loads prior team strength ratings (scale 50–100) for all World Cup nations.
+2. Estimates expected goals per side using rating differentials and a conservative tournament baseline.
+3. Blends in live match statistics (goals-for/against averages, BTTS rate, over rates) as they accumulate during the tournament.
+4. Derives market probabilities via the Poisson distribution.
+5. Computes **edge** (`model_prob − implied_prob`) and **expected value** (`model_prob × odd − 1`).
+6. Approves a recommendation only when both EV and edge clear market-specific thresholds.
+
+### Supported markets
+
+| Market | Selections |
+|---|---|
+| Over/Under | Over 0.5, Over 1.5, Over 2.5, Over 3.5, Under 3.5 |
+| Both Teams Score | Yes, No |
+
+### Confidence tiers
+
+| Tier | Confidence score | Minimum edge |
+|---|---|---|
+| A | ≥ 82 | ≥ 10% |
+| B | ≥ 72 | ≥ 7% |
+| C | ≥ 62 | ≥ 5% |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                  BetStarter                     │
+│                                                 │
+│  ┌──────────┐   ┌──────────┐   ┌─────────────┐ │
+│  │ Collector│──▶│   Model  │──▶│ Recommender │ │
+│  │(API-Ftbl)│   │(Poisson) │   │ (EV filter) │ │
+│  └──────────┘   └──────────┘   └──────┬──────┘ │
+│                                        │        │
+│  ┌─────────────────────────────────────▼──────┐ │
+│  │          SQLite / PostgreSQL               │ │
+│  └─────────────────────────────────────┬──────┘ │
+│                                        │        │
+│  ┌─────────────────┐   ┌───────────────▼──────┐ │
+│  │  FastAPI (REST) │   │  Streamlit Dashboard │ │
+│  └─────────────────┘   └──────────────────────┘ │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## Prerequisites
+
+- Python 3.12+
+- An [API-Football](https://www.api-football.com/) API key (free tier works for World Cup)
+- Docker & Docker Compose (optional, for containerised setup)
+
+---
+
+## Quickstart
+
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/your-org/BetStarter.git
+cd BetStarter
+```
+
+Copy the environment template and fill in your API key:
+
+```bash
+cp .env.example .env
+```
+
+```env
+API_FOOTBALL_KEY=your_key_here
+```
+
+### 2. Install dependencies
 
 ```powershell
 py -m venv .venv
@@ -24,116 +94,130 @@ py -m venv .venv
 py -m pip install -r requirements.txt
 ```
 
-Crie o arquivo `.env` a partir do exemplo:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Edite o `.env` e coloque sua chave:
-
-```env
-API_FOOTBALL_KEY=sua_chave_aqui
-WORLD_CUP_ONLY=true
-WORLD_CUP_LEAGUE_ID=1
-WORLD_CUP_SEASON=2026
-MIN_EV=0.05
-DEFAULT_BANKROLL=1000
-```
-
-## Rodar
+### 3. Initialise the database
 
 ```powershell
 $env:PYTHONPATH="."
-py scripts\init_db.py
-py -m streamlit run .\dashboard\dashboard.py
+py scripts/init_db.py
 ```
 
-No dashboard, clique em **Atualizar recomendações da Copa**.
-
-## Rodar pipeline manualmente
+### 4. Run the dashboard
 
 ```powershell
 $env:PYTHONPATH="."
-py scripts\pipeline.py --days 7
+py -m streamlit run dashboard/dashboard.py
 ```
 
-Exemplo de saida esperada:
+Open [http://localhost:8501](http://localhost:8501) and click **Update Recommendations**.
 
-```text
-{'competition': 'FIFA World Cup', 'league': 1, 'season': 2026, 'fixtures': 15, 'odds': 1357, 'ratings_seeded': 48, 'stats': 1, 'odds_analyzed': 300, 'recommendations': 8}
+### 5. Run the API server (optional)
+
+```powershell
+$env:PYTHONPATH="."
+uvicorn app.main:app --reload
 ```
 
-## O que o modelo faz
+API docs available at [http://localhost:8000/docs](http://localhost:8000/docs).
 
-Para Over 1.5, Over 2.5 e Ambas Marcam:
+---
 
-1. Usa rating inicial das selecoes.
-2. Estima gols esperados de cada lado.
-3. Calcula probabilidade via Poisson.
-4. Usa stats recentes da propria Copa quando existirem.
-5. Compara com probabilidade implicita da odd.
-6. Aprova somente se EV e Edge passarem no filtro.
+## Docker
 
-## Onde ajustar ratings
-
-Arquivo:
-
-```text
-app/services/worldcup_model.py
+```bash
+docker compose up
 ```
 
-Procure por:
+| Service | URL |
+|---|---|
+| API | http://localhost:8000 |
+| Dashboard | http://localhost:8501 |
 
-```python
-DEFAULT_TEAM_RATINGS = {
-    "Argentina": 92,
-    "France": 91,
-    ...
+---
+
+## Pipeline (manual run)
+
+```powershell
+$env:PYTHONPATH="."
+py scripts/pipeline.py --days 7
+```
+
+Example output:
+
+```json
+{
+  "competition": "FIFA World Cup",
+  "league": 1,
+  "season": 2026,
+  "fixtures": 15,
+  "odds": 1357,
+  "ratings_seeded": 48,
+  "stats": 1,
+  "odds_analyzed": 300,
+  "recommendations": 8
 }
 ```
 
-## Onde ajustar filtros
+---
 
-Arquivo `.env`:
+## Configuration
 
-```env
-MIN_EV=0.05
+All settings are read from the `.env` file (see `.env.example`).
+
+| Variable | Default | Description |
+|---|---|---|
+| `API_FOOTBALL_KEY` | — | API-Football v3 key (required) |
+| `API_FOOTBALL_HOST` | `v3.football.api-sports.io` | API host |
+| `DATABASE_URL` | `sqlite:///./bets.db` | SQLAlchemy connection string |
+| `MIN_EV` | `0.05` | Minimum expected value to approve a bet |
+| `DEFAULT_BANKROLL` | `1000` | Starting bankroll shown in dashboard |
+| `WORLD_CUP_ONLY` | `true` | Lock the system to World Cup fixtures only |
+| `WORLD_CUP_LEAGUE_ID` | `1` | API-Football league ID for the World Cup |
+| `WORLD_CUP_SEASON` | `2026` | Target season |
+| `TARGET_BOOKMAKER` | `Superbet` | Bookmaker whose odds are used for recommendations |
+
+### Tuning the model
+
+Team ratings live in [app/services/worldcup_model.py](app/services/worldcup_model.py) (`DEFAULT_TEAM_RATINGS`). Adjust them before the tournament starts or as form evolves.
+
+Filter thresholds can be tuned in [app/services/recommender.py](app/services/recommender.py).
+
+---
+
+## Project structure
+
+```
+BetStarter/
+├── app/
+│   ├── api/               # API layer (future expansion)
+│   ├── db/                # Database session and initialisation
+│   ├── models/            # SQLAlchemy ORM models
+│   ├── services/
+│   │   ├── api_football.py    # API-Football client
+│   │   ├── collector.py       # Fixture and odds ingestion
+│   │   ├── recommender.py     # EV filter and recommendation engine
+│   │   └── worldcup_model.py  # Poisson model and team ratings
+│   ├── config.py
+│   └── main.py            # FastAPI application
+├── dashboard/
+│   ├── pages/             # Streamlit multi-page views
+│   └── dashboard.py       # Entry point
+├── scripts/               # One-off and pipeline scripts
+├── .env.example
+├── docker-compose.yml
+├── Dockerfile
+├── Makefile
+└── requirements.txt
 ```
 
-Ou no arquivo:
+---
 
-```text
-app/services/recommender.py
-```
+## Troubleshooting
 
-Filtros principais:
+**Dashboard shows no recommendations**
+→ Open the **Rejected / Debug** tab. If odds are being rejected, the system is working — the filter found no sufficient EV. Try lowering `MIN_EV=0.02` temporarily.
 
-```python
-if ev < min_ev:
-if edge < 0.03:
-if output.confidence_score < 55:
-```
+**No fixtures appear**
+→ Run `scripts/pipeline.py --days 14` to widen the collection window.
 
-## Problemas comuns
-
-### Dashboard sem entradas
-
-Vá na aba **Rejeitadas / Debug**. Se houver odds rejeitadas, o sistema está funcionando e o filtro não encontrou EV suficiente.
-
-### Jogos aparecem mas não há recomendações
-
-Pode acontecer quando as odds estão eficientes ou quando o modelo está conservador. Diminua `MIN_EV` temporariamente para testar:
-
-```env
-MIN_EV=0.02
-```
-
-### Erro de pacote app
-
-Rode sempre assim:
-
-```powershell
-$env:PYTHONPATH="."
-py -m streamlit run .\dashboard\dashboard.py
-```
+**`ModuleNotFoundError: No module named 'app'`**
+→ Always set `PYTHONPATH` before running scripts: `$env:PYTHONPATH="."` (PowerShell) or `export PYTHONPATH=.` (bash).
