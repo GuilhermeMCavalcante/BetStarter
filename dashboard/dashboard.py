@@ -73,7 +73,7 @@ for r in rows:
         "Match": f"{r.home_team} × {r.away_team}",
         "Market": r.market,
         "Selection": r.selection,
-        "Score": score_label(fixture),
+        "Score": score_label(fixture, r.market),
         "Result": result,
         "Odd": r.odd,
         "Model %": r.model_probability,

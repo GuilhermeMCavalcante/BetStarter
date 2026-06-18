@@ -7,7 +7,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from zoneinfo import ZoneInfo
 from app.config import settings
 from app.models.entities import Fixture, Odd, Recommendation, RecommendationAudit, TeamRecentStat
-from app.services.worldcup_model import calculate_market_probability, seed_team_ratings
+from app.services.worldcup_model import calculate_market_probability, calculate_corners_probability, seed_team_ratings
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +19,13 @@ SUPPORTED_RECOMMENDATION_SELECTIONS = {
     ("Over/Under", "Under 3.5"),
     ("Both Teams Score", "Yes"),
     ("Both Teams Score", "No"),
+    ("Corners Over/Under", "Over 8.5"),
+    ("Corners Over/Under", "Over 9.5"),
+    ("Corners Over/Under", "Over 10.5"),
+    ("Corners Over/Under", "Over 11.5"),
+    ("Corners Over/Under", "Under 8.5"),
+    ("Corners Over/Under", "Under 9.5"),
+    ("Corners Over/Under", "Under 10.5"),
 }
 BR_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -122,7 +129,11 @@ def generate_recommendations(db: Session, min_ev: float | None = None, league: i
             if odd.odd <= 1:
                 continue
 
-            output = calculate_market_probability(db, fixture, home_stats, away_stats, odd.market, odd.selection)
+            if odd.market == "Corners Over/Under":
+                output = calculate_corners_probability(home_stats, away_stats, odd.selection)
+            else:
+                output = calculate_market_probability(db, fixture, home_stats, away_stats, odd.market, odd.selection)
+
             probability = output.probability
             if probability <= 0:
                 audit(db, fixture, odd, 0, 0, 0, 0, "REJECTED", "unsupported market")
@@ -132,48 +143,12 @@ def generate_recommendations(db: Session, min_ev: float | None = None, league: i
             edge = probability - implied
             ev = (probability * odd.odd) - 1
 
-            if output.confidence_score < 55:
+            # Only filter out signals where the model gives less than 50% probability.
+            # EV, edge and grade remain visible so the user can decide which to enter.
+            if probability < 0.50:
                 audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                      f"Low confidence ({output.confidence_score}). {output.reason}")
+                      f"Probability below 50% ({probability:.1%}). {output.reason}")
                 continue
-
-            if odd.market == "Both Teams Score":
-                if odd.selection == "Yes":
-                    if edge < 0.08 or ev < 0.15:
-                        audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                              f"BTTS Yes: insufficient value. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
-                        continue
-
-                if odd.selection == "No":
-                    if probability < 0.52:
-                        audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                              f"BTTS No: low probability ({probability:.2%}). {output.reason}")
-                        continue
-
-                    if edge < 0.05 or ev < 0.08:
-                        audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                              f"BTTS No: insufficient value. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
-                        continue
-
-            if odd.market == "Over/Under":
-                if odd.selection == "Under 3.5" and probability < 0.68:
-                    audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                          f"Under 3.5: low probability ({probability:.2%}). {output.reason}")
-                    continue
-                if odd.selection == "Over 2.5" and probability < 0.42:
-                    audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                          f"Over 2.5: low probability ({probability:.2%}). {output.reason}")
-                    continue
-
-                if odd.selection == "Over 1.5" and probability < 0.62:
-                    audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                          f"Over 1.5: low probability ({probability:.2%}). {output.reason}")
-                    continue
-
-                if edge < 0.05 or ev < 0.08:
-                    audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
-                          f"Over/Under: insufficient value. Edge {edge:.2%}, EV {ev:.2%}. {output.reason}")
-                    continue
 
             values = {
                 "fixture_id": fixture.id,
@@ -232,11 +207,31 @@ def bet_result(market: str, selection: str, fixture) -> str:
             return "WIN" if btts else "RED"
         if selection == "No":
             return "WIN" if not btts else "RED"
+    if market == "Corners Over/Under":
+        if fixture.home_corners is None or fixture.away_corners is None:
+            return "PENDING"
+        total_corners = fixture.home_corners + fixture.away_corners
+        corner_lines = {
+            "Over 8.5": 8.5, "Over 9.5": 9.5, "Over 10.5": 10.5, "Over 11.5": 11.5,
+            "Under 8.5": 8.5, "Under 9.5": 9.5, "Under 10.5": 10.5,
+        }
+        if selection in corner_lines:
+            line = corner_lines[selection]
+            if selection.startswith("Over"):
+                return "WIN" if total_corners > line else "RED"
+            else:
+                return "WIN" if total_corners < line else "RED"
     return "N/A"
 
 
-def score_label(fixture) -> str:
-    if not fixture or fixture.home_goals is None:
+def score_label(fixture, market: str = "") -> str:
+    if not fixture:
+        return "-"
+    if market == "Corners Over/Under":
+        if fixture.home_corners is None:
+            return "-"
+        return f"{fixture.home_corners} × {fixture.away_corners} cant."
+    if fixture.home_goals is None:
         return "-"
     return f"{fixture.home_goals} × {fixture.away_goals}"
 

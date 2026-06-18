@@ -17,6 +17,8 @@ class Fixture(Base):
     away_team = Column(String)
     home_goals = Column(Integer, nullable=True)
     away_goals = Column(Integer, nullable=True)
+    home_corners = Column(Integer, nullable=True)
+    away_corners = Column(Integer, nullable=True)
 
 
 class Odd(Base):
@@ -48,6 +50,10 @@ class TeamRecentStat(Base):
     btts_rate = Column(Float, default=0)
     over15_rate = Column(Float, default=0)
     over25_rate = Column(Float, default=0)
+    corners_for_avg = Column(Float, nullable=True)
+    corners_against_avg = Column(Float, nullable=True)
+    over95_corners_rate = Column(Float, nullable=True)
+    over105_corners_rate = Column(Float, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("team_id", "league_id", "season", name="uq_team_stats"),
@@ -144,6 +150,32 @@ class BacktestResult(Base):
     __table_args__ = (
         UniqueConstraint("fixture_id", "market", "selection", "bookmaker", name="uq_backtest"),
     )
+
+class TelegramSignal(Base):
+    __tablename__ = "telegram_signals"
+
+    id = Column(Integer, primary_key=True)
+    fixture_id = Column(Integer, index=True)
+    league_id = Column(Integer, index=True)
+    date = Column(DateTime, index=True)
+    home_team = Column(String)
+    away_team = Column(String)
+    market = Column(String)
+    selection = Column(String)
+    bookmaker = Column(String)
+    odd = Column(Float)
+    model_probability = Column(Float)
+    edge = Column(Float)
+    expected_value = Column(Float)
+    confidence = Column(String)
+    suggested_stake_pct = Column(Float)
+    telegram_message_id = Column(Integer, nullable=True)
+    sent_at = Column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint("fixture_id", "market", "selection", "bookmaker", name="uq_tg_signal"),
+    )
+
 
 class HistoricalTeamStat(Base):
     __tablename__ = "historical_team_stats"

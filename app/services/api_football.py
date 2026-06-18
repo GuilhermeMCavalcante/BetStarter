@@ -64,3 +64,7 @@ class ApiFootballClient:
         if bookmaker:
             params["bookmaker"] = bookmaker
         return self._get("odds", params)
+
+    def fixture_statistics(self, fixture_id: int) -> list[dict[str, Any]]:
+        """Return per-team statistics for a single completed fixture."""
+        return self._get("fixtures/statistics", {"fixture": fixture_id})

@@ -75,24 +75,215 @@ def get_rating(db: Session, team_name: str) -> float:
     return float(DEFAULT_TEAM_RATINGS.get(canonical, 70.0))
 
 
+def _set_rating(db: Session, team_name: str, new_rating: float) -> None:
+    canonical = canonical_team_name(team_name)
+    row = db.query(TeamRating).filter(TeamRating.team_name == canonical).first()
+    clamped = round(max(40.0, min(100.0, new_rating)), 2)
+    if row:
+        row.rating = clamped
+        row.source = "elo_auto"
+        row.updated_at = datetime.utcnow()
+    else:
+        db.add(TeamRating(team_name=canonical, rating=clamped, source="elo_auto", updated_at=datetime.utcnow()))
+
+
+def elo_update_ratings(db: Session, league: int, season: int, k_factor: float = 6.0) -> int:
+    """Apply Elo-style rating updates from completed fixture results.
+
+    Each completed match adjusts both teams' ratings proportional to how surprising
+    the result was relative to the current rating gap. The more matches complete,
+    the more the ratings reflect actual tournament performance instead of manual priors.
+    """
+    fixtures = (
+        db.query(Fixture)
+        .filter(
+            Fixture.league_id == league,
+            Fixture.season == season,
+            Fixture.status.in_(["FT", "AET", "PEN"]),
+            Fixture.home_goals.isnot(None),
+            Fixture.away_goals.isnot(None),
+        )
+        .order_by(Fixture.date.asc())
+        .all()
+    )
+
+    # Reset to manual priors before replaying all results so updates are idempotent.
+    seed_team_ratings(db)
+
+    updated = 0
+    for f in fixtures:
+        home_r = get_rating(db, f.home_team)
+        away_r = get_rating(db, f.away_team)
+
+        expected_home = 1 / (1 + 10 ** ((away_r - home_r) / 400))
+
+        if f.home_goals > f.away_goals:
+            actual_home = 1.0
+        elif f.home_goals == f.away_goals:
+            actual_home = 0.5
+        else:
+            actual_home = 0.0
+
+        delta = k_factor * (actual_home - expected_home)
+        _set_rating(db, f.home_team, home_r + delta)
+        _set_rating(db, f.away_team, away_r - delta)
+        updated += 1
+
+    db.commit()
+    return updated
+
+
 def poisson_pmf(k: int, lam: float) -> float:
     return exp(-lam) * (lam ** k) / factorial(k)
 
 
 def poisson_over_probability(total_lambda: float, line: float) -> float:
-    if line == 1.5:
-        return 1 - sum(poisson_pmf(k, total_lambda) for k in range(0, 2))
-    if line == 2.5:
-        return 1 - sum(poisson_pmf(k, total_lambda) for k in range(0, 3))
-    raise ValueError(f"Unsupported over line: {line}")
+    k_max = int(line + 0.5)  # number of goals that would be "under"
+    return 1 - sum(poisson_pmf(k, total_lambda) for k in range(0, k_max + 1))
 
 def poisson_under_probability(total_lambda: float, line: float) -> float:
-    if line == 3.5:
-        return sum(poisson_pmf(k, total_lambda) for k in range(0, 4))
-    raise ValueError(f"Unsupported under line: {line}")
+    k_max = int(line + 0.5)  # last integer below the line
+    return sum(poisson_pmf(k, total_lambda) for k in range(0, k_max + 1))
 
 def btts_probability(home_lambda: float, away_lambda: float) -> float:
     return (1 - exp(-home_lambda)) * (1 - exp(-away_lambda))
+
+
+def calculate_1x2(
+    db: Session,
+    fixture,
+    home_stats,
+    away_stats,
+    max_goals: int = 9,
+) -> dict:
+    """Return Home/Draw/Away win probabilities via Poisson score matrix."""
+    home_lam, away_lam, reason, confidence = estimate_expected_goals(db, fixture, home_stats, away_stats)
+
+    p_home = p_draw = p_away = 0.0
+    most_likely_score = (0, 0)
+    best_score_prob = 0.0
+
+    for h in range(max_goals + 1):
+        for a in range(max_goals + 1):
+            p = poisson_pmf(h, home_lam) * poisson_pmf(a, away_lam)
+            if p > best_score_prob:
+                best_score_prob = p
+                most_likely_score = (h, a)
+            if h > a:
+                p_home += p
+            elif h == a:
+                p_draw += p
+            else:
+                p_away += p
+
+    # Normalise rounding residue
+    total = p_home + p_draw + p_away
+    if total > 0:
+        p_home /= total
+        p_draw /= total
+        p_away /= total
+
+    outcomes = {"1": p_home, "X": p_draw, "2": p_away}
+    tip = max(outcomes, key=outcomes.get)
+
+    return {
+        "home": round(p_home, 4),
+        "draw": round(p_draw, 4),
+        "away": round(p_away, 4),
+        "tip": tip,
+        "expected_home_goals": round(home_lam, 2),
+        "expected_away_goals": round(away_lam, 2),
+        "most_likely_score": most_likely_score,
+        "most_likely_score_prob": round(best_score_prob, 4),
+        "confidence": confidence,
+        "reason": reason,
+    }
+
+
+# ── Corners model ──────────────────────────────────────────────────────────────
+
+# World Cup baseline: ~10 total corners per match (home ~5.5, away ~4.5)
+BASE_CORNERS_HOME = 5.5
+BASE_CORNERS_AWAY = 4.5
+
+
+def estimate_expected_corners(
+    home_stats: TeamRecentStat | None,
+    away_stats: TeamRecentStat | None,
+) -> tuple[float, float, str, int]:
+    home_lam = BASE_CORNERS_HOME
+    away_lam = BASE_CORNERS_AWAY
+    confidence = 50
+    reason_bits = ["corner prior: base 5.5/4.5"]
+
+    if (home_stats and away_stats
+            and home_stats.corners_for_avg is not None
+            and home_stats.corners_against_avg is not None
+            and away_stats.corners_for_avg is not None
+            and away_stats.corners_against_avg is not None):
+        stat_home = (home_stats.corners_for_avg + away_stats.corners_against_avg) / 2
+        stat_away = (away_stats.corners_for_avg + home_stats.corners_against_avg) / 2
+        n = min(home_stats.matches, away_stats.matches)
+        weight = min(0.55, 0.15 + 0.04 * n)
+        home_lam = home_lam * (1 - weight) + stat_home * weight
+        away_lam = away_lam * (1 - weight) + stat_away * weight
+        confidence += min(25, n * 4)
+        reason_bits.append(f"corner stats used ({n} matches, weight={weight:.0%})")
+    else:
+        reason_bits.append("no corner stats; using prior only")
+
+    return (
+        clamp(home_lam, 1.0, 12.0),
+        clamp(away_lam, 1.0, 10.0),
+        "; ".join(reason_bits),
+        min(confidence, 88),
+    )
+
+
+def calculate_corners_probability(
+    home_stats: TeamRecentStat | None,
+    away_stats: TeamRecentStat | None,
+    selection: str,
+) -> ModelOutput:
+    home_lam, away_lam, reason, confidence = estimate_expected_corners(home_stats, away_stats)
+    total_lam = home_lam + away_lam
+
+    corner_lines = {
+        "Over 8.5": 8.5,
+        "Over 9.5": 9.5,
+        "Over 10.5": 10.5,
+        "Over 11.5": 11.5,
+        "Under 8.5": 8.5,
+        "Under 9.5": 9.5,
+        "Under 10.5": 10.5,
+    }
+
+    if selection not in corner_lines:
+        return ModelOutput(0.0, home_lam, away_lam, 0, "unsupported corner selection")
+
+    line = corner_lines[selection]
+    if selection.startswith("Over"):
+        poisson_prob = 1 - poisson_under_probability(total_lam, line - 0.5)
+    else:
+        poisson_prob = poisson_under_probability(total_lam, line - 0.5)
+
+    # Blend with historical rate when available
+    trend = None
+    if home_stats and away_stats:
+        if selection == "Over 9.5" and home_stats.over95_corners_rate is not None:
+            trend = (home_stats.over95_corners_rate + away_stats.over95_corners_rate) / 2
+        elif selection == "Over 10.5" and home_stats.over105_corners_rate is not None:
+            trend = (home_stats.over105_corners_rate + away_stats.over105_corners_rate) / 2
+
+    if trend is not None:
+        probability = poisson_prob * 0.65 + trend * 0.35
+        reason += f"; poisson={poisson_prob:.1%}; trend={trend:.1%}"
+    else:
+        probability = poisson_prob
+        reason += f"; poisson={poisson_prob:.1%}"
+
+    probability = (probability * 0.96) + 0.02
+    return ModelOutput(clamp(probability), home_lam, away_lam, confidence, reason)
 
 
 def no_vig_probability(odds: Iterable[Odd], selection: str) -> float | None:

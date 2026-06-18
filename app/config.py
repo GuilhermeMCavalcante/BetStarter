@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     world_cup_league_id: int = 1
     world_cup_season: int = 2026
 
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

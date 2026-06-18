@@ -7,7 +7,7 @@ from app.config import validate_world_cup_scope
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.models.entities import RecommendationAudit
-from app.services.collector import fetch_and_store_fixtures, fetch_and_store_odds, calculate_recent_stats
+from app.services.collector import fetch_and_store_fixtures, fetch_and_store_odds, fetch_and_store_corner_stats, calculate_recent_stats
 from app.services.recommender import generate_recommendations
 from app.services.worldcup_model import seed_team_ratings
 
@@ -23,6 +23,7 @@ def run_pipeline(days: int = 7, past_days: int = 10) -> dict:
         ratings = seed_team_ratings(db)
         fixtures = fetch_and_store_fixtures(db, league, season, days=days, past_days=past_days)
         odds = fetch_and_store_odds(db, league, season)
+        corners = fetch_and_store_corner_stats(db, league, season)
         stats = calculate_recent_stats(db, league, season)
         recs = generate_recommendations(
             db, league=league, season=season, days=days, past_days=past_days
@@ -42,6 +43,7 @@ def run_pipeline(days: int = 7, past_days: int = 10) -> dict:
         "season": season,
         "fixtures": fixtures,
         "odds": odds,
+        "corners_updated": corners,
         "ratings_seeded": ratings,
         "stats_updated": stats,
         "odds_analyzed": analyzed,
