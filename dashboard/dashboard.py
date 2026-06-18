@@ -11,10 +11,13 @@ import pandas as pd
 import streamlit as st
 
 from app.config import settings, validate_world_cup_scope
+from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.models.entities import Fixture
 from app.services.pipeline import run_pipeline
 from app.services.recommender import list_recommendations, bet_result, score_label
+
+init_db()  # garante que todas as tabelas existem antes de qualquer query
 
 st.set_page_config(page_title="BetStarter", layout="wide", page_icon="⚽")
 
