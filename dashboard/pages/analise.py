@@ -20,8 +20,6 @@ from app.services.worldcup_model import (
     canonical_team_name,
 )
 
-st.set_page_config(page_title="Análise — BetStarter", layout="wide", page_icon="🔬")
-
 st.title("🔬 Análise")
 st.caption("Explorador de partidas, estatísticas por time e breakdown de mercados.")
 

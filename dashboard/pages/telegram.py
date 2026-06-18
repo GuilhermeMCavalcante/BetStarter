@@ -20,8 +20,6 @@ from app.models.entities import Fixture, TelegramSignal
 from app.services.recommender import list_recommendations, bet_result, score_label
 from app.services.telegram import format_signal, send_signal, send_batch
 
-st.set_page_config(page_title="Telegram — BetStarter", layout="wide", page_icon="📨")
-
 st.title("📨 Telegram Signals")
 st.caption("Sinais agrupados por dia · Prévia e envio direto para o canal.")
 

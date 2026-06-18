@@ -7,129 +7,161 @@ sys.path.insert(0, str(ROOT_DIR))
 from dotenv import load_dotenv
 load_dotenv(ROOT_DIR / ".env")
 
-import pandas as pd
 import streamlit as st
 
-from app.config import settings, validate_world_cup_scope
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
-from app.models.entities import Fixture
-from app.services.pipeline import run_pipeline
-from app.services.recommender import list_recommendations, bet_result, score_label
+from app.services.auth import (
+    ROLE_LABEL,
+    authenticate,
+    create_user,
+    list_users,
+)
 
-init_db()  # garante que todas as tabelas existem antes de qualquer query
+init_db()
 
 st.set_page_config(page_title="BetStarter", layout="wide", page_icon="⚽")
 
-st.title("BetStarter — FIFA World Cup 2026")
-st.caption("Statistical recommendation engine · Analytical tool, not financial advice.")
+# ── Session bootstrap ──────────────────────────────────────────────────────────
+if "user" not in st.session_state:
+    st.session_state.user = None
 
-league, season = validate_world_cup_scope()
+PAGES = Path(__file__).resolve().parent / "pages"
 
-with st.sidebar:
-    st.header("Settings")
-    bankroll = st.number_input("Bankroll (R$)", min_value=1.0, value=settings.default_bankroll, step=50.0)
-    days = st.slider("Look ahead (days)", 1, 30, 7)
-    past_days = st.slider("Look back (days)", 0, 30, 3)
-    limit = st.slider("Max rows", 10, 200, 50)
-    st.divider()
-    date_filter = st.checkbox("Filter by date")
-    date_selected = st.date_input("Date") if date_filter else None
-    st.divider()
-    st.caption(f"World Cup {season} · League {league}")
 
-if st.button("Update & Analyze", type="primary", use_container_width=True):
-    with st.spinner("Fetching fixtures and odds, computing recommendations..."):
+# ── First-run setup (no users in DB yet) ──────────────────────────────────────
+def _first_run_setup():
+    st.markdown(
+        "<h2 style='text-align:center'>⚽ BetStarter — Configuração Inicial</h2>",
+        unsafe_allow_html=True,
+    )
+    st.info("Nenhum usuário cadastrado. Crie o primeiro administrador para começar.")
+    with st.form("setup_form"):
+        username = st.text_input("Usuário administrador")
+        email = st.text_input("E-mail (opcional)")
+        password = st.text_input("Senha", type="password",
+                                 help="Mín. 8 caracteres, 1 maiúscula e 1 número.")
+        password2 = st.text_input("Confirmar senha", type="password")
+        submitted = st.form_submit_button("Criar administrador", type="primary",
+                                          use_container_width=True)
+    if submitted:
+        if password != password2:
+            st.error("As senhas não coincidem.")
+            return
         try:
-            result = run_pipeline(days=days, past_days=past_days)
-            st.success(
-                f"Pipeline complete — {result['fixtures']} fixtures · "
-                f"{result['odds']} odds · {result['recommendations']} recommendations"
-            )
-        except Exception as exc:
-            st.error(f"Pipeline error: {exc}")
-            st.stop()
-    st.rerun()
+            with SessionLocal() as db:
+                user = create_user(db, username, password, role="admin",
+                                   email=email or None)
+            st.success(f"Administrador '{user.username}' criado com sucesso! Faça login.")
+            st.rerun()
+        except ValueError as e:
+            st.error(str(e))
 
+
+# ── Login / register form ──────────────────────────────────────────────────────
+def _show_auth():
+    _, col, _ = st.columns([1, 1.6, 1])
+    with col:
+        st.markdown(
+            "<h2 style='text-align:center'>⚽ BetStarter</h2>"
+            "<p style='text-align:center; color:#888'>FIFA World Cup 2026 · Análise estatística</p>",
+            unsafe_allow_html=True,
+        )
+        st.divider()
+        tab_login, tab_register = st.tabs(["🔑 Entrar", "📝 Criar conta"])
+
+        with tab_login:
+            with st.form("login_form"):
+                username = st.text_input("Usuário")
+                password = st.text_input("Senha", type="password")
+                submitted = st.form_submit_button("Entrar", type="primary",
+                                                  use_container_width=True)
+            if submitted:
+                if not username or not password:
+                    st.error("Preencha usuário e senha.")
+                else:
+                    with SessionLocal() as db:
+                        user, msg = authenticate(db, username, password)
+                    if user:
+                        st.session_state.user = {
+                            "id": user.id,
+                            "username": user.username,
+                            "role": user.role,
+                        }
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+        with tab_register:
+            st.caption("Novas contas começam com perfil **Básico**. "
+                       "Um administrador pode alterar o perfil depois.")
+            with st.form("register_form"):
+                new_user = st.text_input("Usuário", help="Letras minúsculas, números e _ apenas.")
+                new_email = st.text_input("E-mail (opcional)")
+                new_pass = st.text_input("Senha", type="password",
+                                         help="Mín. 8 caracteres, 1 maiúscula e 1 número.")
+                new_pass2 = st.text_input("Confirmar senha", type="password")
+                submitted_reg = st.form_submit_button("Criar conta", use_container_width=True)
+            if submitted_reg:
+                if new_pass != new_pass2:
+                    st.error("As senhas não coincidem.")
+                else:
+                    try:
+                        with SessionLocal() as db:
+                            create_user(db, new_user, new_pass, role="viewer",
+                                        email=new_email or None)
+                        st.success("Conta criada! Faça login na aba **Entrar**.")
+                    except ValueError as e:
+                        st.error(str(e))
+
+
+# ── Check first run ────────────────────────────────────────────────────────────
 with SessionLocal() as db:
-    rows = list_recommendations(db, limit=limit, league=league, season=season)
-    fixture_map = {
-        f.id: f
-        for f in db.query(Fixture)
-        .filter(Fixture.league_id == league, Fixture.season == season)
-        .all()
-    }
+    no_users = len(list_users(db)) == 0
 
-if not rows:
-    st.info("No recommendations yet. Click **Update & Analyze** to run the pipeline.")
+if no_users:
+    _first_run_setup()
     st.stop()
 
-data = []
-for r in rows:
-    fixture = fixture_map.get(r.fixture_id)
-    result = bet_result(r.market, r.selection, fixture)
-    stake_r = r.suggested_stake_pct * bankroll
-    pnl = stake_r * (r.odd - 1) if result == "WIN" else (-stake_r if result == "RED" else 0.0)
+if not st.session_state.user:
+    _show_auth()
+    st.stop()
 
-    data.append({
-        "Date": r.date,
-        "Match": f"{r.home_team} × {r.away_team}",
-        "Market": r.market,
-        "Selection": r.selection,
-        "Score": score_label(fixture, r.market),
-        "Result": result,
-        "Odd": r.odd,
-        "Model %": r.model_probability,
-        "Edge": r.edge,
-        "EV": r.expected_value,
-        "Grade": r.confidence,
-        "Stake R$": stake_r,
-        "P&L R$": pnl,
-    })
+# ── Authenticated — build navigation ──────────────────────────────────────────
+user = st.session_state.user
+role = user["role"]
 
-df = pd.DataFrame(data)
-df["Date"] = pd.to_datetime(df["Date"])
+# Sidebar: identity + logout
+with st.sidebar:
+    st.markdown(
+        f"👤 **{user['username']}**  \n"
+        f"`{ROLE_LABEL.get(role, role)}`"
+    )
+    if st.button("Sair", use_container_width=True):
+        st.session_state.user = None
+        st.rerun()
+    st.divider()
 
-if date_filter and date_selected:
-    df = df[df["Date"].dt.date == date_selected]
-    if df.empty:
-        st.warning(f"No recommendations for {date_selected}.")
-        st.stop()
+# ── Page registry ──────────────────────────────────────────────────────────────
+home_pg        = st.Page(str(PAGES / "home.py"),            title="Home",        icon="⚽", default=True)
+palpites_pg    = st.Page(str(PAGES / "palpites.py"),        title="Palpites",    icon="🎯")
+performance_pg = st.Page(str(PAGES / "recommendations.py"), title="Performance", icon="📈")
+model_pg       = st.Page(str(PAGES / "modelo.py"),          title="Modelo",      icon="🧠")
+analise_pg     = st.Page(str(PAGES / "analise.py"),         title="Análise",     icon="🔬")
+telegram_pg    = st.Page(str(PAGES / "telegram.py"),        title="Telegram",    icon="📨")
+admin_pg       = st.Page(str(PAGES / "admin.py"),           title="Usuários",    icon="👥")
 
-resolved = df[df["Result"].isin(["WIN", "RED"])]
-wins = len(resolved[resolved["Result"] == "WIN"])
-reds = len(resolved[resolved["Result"] == "RED"])
-n_resolved = wins + reds
-hit_rate = wins / n_resolved if n_resolved else 0
-total_pnl = resolved["P&L R$"].sum()
+# ── Access matrix ──────────────────────────────────────────────────────────────
+#  viewer   → Home, Palpites
+#  analyst  → Home, Palpites, Performance, Modelo, Análise
+#  admin    → tudo + Telegram + Usuários
+if role == "viewer":
+    pages = [home_pg, palpites_pg]
+elif role == "analyst":
+    pages = [home_pg, palpites_pg, performance_pg, model_pg, analise_pg]
+else:  # admin
+    pages = [home_pg, palpites_pg, performance_pg, model_pg, analise_pg,
+             telegram_pg, admin_pg]
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Recommendations", len(df))
-c2.metric("WIN", wins)
-c3.metric("RED", reds)
-c4.metric("Pending", len(df[df["Result"] == "PENDING"]))
-c5.metric("Hit Rate", f"{hit_rate:.1%}" if n_resolved else "—")
-c6.metric("P&L (R$)", f"R$ {total_pnl:+.2f}" if n_resolved else "—")
-
-st.divider()
-
-st.dataframe(
-    df.style
-    .format({
-        "Odd": "{:.2f}",
-        "Model %": "{:.1%}",
-        "Edge": "{:.1%}",
-        "EV": "{:.1%}",
-        "Stake R$": "R$ {:.2f}",
-        "P&L R$": "R$ {:+.2f}",
-    })
-    .map(
-        lambda v: "color: #2ecc71; font-weight:bold" if v == "WIN"
-        else ("color: #e74c3c; font-weight:bold" if v == "RED" else ""),
-        subset=["Result"],
-    ),
-    use_container_width=True,
-    column_config={
-        "Date": st.column_config.DatetimeColumn("Date", format="DD/MM HH:mm"),
-    },
-)
+pg = st.navigation(pages)
+pg.run()

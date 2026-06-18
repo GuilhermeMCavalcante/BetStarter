@@ -19,8 +19,6 @@ from app.db.session import SessionLocal
 from app.models.entities import Fixture, Odd, TeamRecentStat
 from app.services.worldcup_model import calculate_1x2, canonical_team_name
 
-st.set_page_config(page_title="Palpites — BetStarter", layout="wide", page_icon="🎯")
-
 st.title("🎯 Palpites")
 st.caption("Previsão de resultado (1×2) baseada no modelo Poisson com ratings e estatísticas recentes.")
 

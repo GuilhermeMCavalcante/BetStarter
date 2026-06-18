@@ -11,6 +11,7 @@ from app.models.entities import (  # noqa — imports register models with Base.
     TeamRating,
     TeamRecentStat,
     TelegramSignal,
+    User,
 )
 
 

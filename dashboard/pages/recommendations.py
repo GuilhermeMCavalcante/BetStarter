@@ -12,8 +12,6 @@ from app.db.session import SessionLocal
 from app.models.entities import Fixture, Recommendation
 from app.services.recommender import list_recommendations, bet_result, score_label
 
-st.set_page_config(page_title="Performance — BetStarter", layout="wide", page_icon="📈")
-
 st.title("Performance")
 st.caption("P&L evolution and market breakdown for all resolved recommendations.")
 

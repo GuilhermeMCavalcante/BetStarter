@@ -20,8 +20,6 @@ from app.services.worldcup_model import (
 )
 from app.services.backtester import run_backtest
 
-st.set_page_config(page_title="Model — BetStarter", layout="wide", page_icon="🧠")
-
 st.title("Model Intelligence")
 st.caption("Current team ratings, model parameters, calibration, and learning from results.")
 

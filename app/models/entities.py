@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, UniqueConstraint
+from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, UniqueConstraint
 from app.db.session import Base
 
 
@@ -150,6 +150,25 @@ class BacktestResult(Base):
     __table_args__ = (
         UniqueConstraint("fixture_id", "market", "selection", "bookmaker", name="uq_backtest"),
     )
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=True)
+    password_hash = Column(String, nullable=False)
+    role = Column(String, default="viewer", nullable=False)  # viewer | analyst | admin
+    is_active = Column(Boolean, default=True, nullable=False)
+    failed_attempts = Column(Integer, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    last_login = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("username", name="uq_user_username"),
+    )
+
 
 class TelegramSignal(Base):
     __tablename__ = "telegram_signals"
