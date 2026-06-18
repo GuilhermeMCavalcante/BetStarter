@@ -22,15 +22,14 @@ init_db()
 
 st.set_page_config(page_title="BetStarter", layout="wide", page_icon="⚽")
 
-# ── Session bootstrap ──────────────────────────────────────────────────────────
 if "user" not in st.session_state:
     st.session_state.user = None
 
-PAGES = Path(__file__).resolve().parent / "pages"
+VIEWS = Path(__file__).resolve().parent / "pages"
 
 
-# ── First-run setup (no users in DB yet) ──────────────────────────────────────
-def _first_run_setup():
+# ── First-run setup ────────────────────────────────────────────────────────────
+def _setup_page():
     st.markdown(
         "<h2 style='text-align:center'>⚽ BetStarter — Configuração Inicial</h2>",
         unsafe_allow_html=True,
@@ -50,16 +49,16 @@ def _first_run_setup():
             return
         try:
             with SessionLocal() as db:
-                user = create_user(db, username, password, role="admin",
-                                   email=email or None)
-            st.success(f"Administrador '{user.username}' criado com sucesso! Faça login.")
+                u = create_user(db, username, password, role="admin", email=email or None)
+                name = u.username  # capture inside session
+            st.success(f"Administrador '{name}' criado! Faça login.")
             st.rerun()
         except ValueError as e:
             st.error(str(e))
 
 
 # ── Login / register form ──────────────────────────────────────────────────────
-def _show_auth():
+def _login_page():
     _, col, _ = st.columns([1, 1.6, 1])
     with col:
         st.markdown(
@@ -80,14 +79,15 @@ def _show_auth():
                 if not username or not password:
                     st.error("Preencha usuário e senha.")
                 else:
+                    # Captura todos os atributos DENTRO da sessão para evitar DetachedInstanceError
                     with SessionLocal() as db:
                         user, msg = authenticate(db, username, password)
-                    if user:
-                        st.session_state.user = {
-                            "id": user.id,
-                            "username": user.username,
-                            "role": user.role,
-                        }
+                        user_data = (
+                            {"id": user.id, "username": user.username, "role": user.role}
+                            if user else None
+                        )
+                    if user_data:
+                        st.session_state.user = user_data
                         st.rerun()
                     else:
                         st.error(msg)
@@ -108,53 +108,57 @@ def _show_auth():
                 else:
                     try:
                         with SessionLocal() as db:
-                            create_user(db, new_user, new_pass, role="viewer",
-                                        email=new_email or None)
-                        st.success("Conta criada! Faça login na aba **Entrar**.")
+                            u = create_user(db, new_user, new_pass, role="viewer",
+                                            email=new_email or None)
+                            name = u.username
+                        st.success(f"Conta '{name}' criada! Faça login na aba **Entrar**.")
                     except ValueError as e:
                         st.error(str(e))
 
 
-# ── Check first run ────────────────────────────────────────────────────────────
+# ── Roteamento ─────────────────────────────────────────────────────────────────
+# st.navigation() é SEMPRE chamado para desativar auto-discovery do diretório pages/
+
 with SessionLocal() as db:
     no_users = len(list_users(db)) == 0
 
 if no_users:
-    _first_run_setup()
+    pg = st.navigation(
+        [st.Page(_setup_page, title="Configuração", icon="⚙️")],
+        position="hidden",
+    )
+    pg.run()
     st.stop()
 
 if not st.session_state.user:
-    _show_auth()
+    pg = st.navigation(
+        [st.Page(_login_page, title="Login", icon="🔑")],
+        position="hidden",
+    )
+    pg.run()
     st.stop()
 
-# ── Authenticated — build navigation ──────────────────────────────────────────
+# ── Usuário autenticado ────────────────────────────────────────────────────────
 user = st.session_state.user
 role = user["role"]
 
-# Sidebar: identity + logout
 with st.sidebar:
-    st.markdown(
-        f"👤 **{user['username']}**  \n"
-        f"`{ROLE_LABEL.get(role, role)}`"
-    )
+    st.markdown(f"👤 **{user['username']}**  \n`{ROLE_LABEL.get(role, role)}`")
     if st.button("Sair", use_container_width=True):
         st.session_state.user = None
         st.rerun()
     st.divider()
 
-# ── Page registry ──────────────────────────────────────────────────────────────
-home_pg        = st.Page(str(PAGES / "home.py"),            title="Home",        icon="⚽", default=True)
-palpites_pg    = st.Page(str(PAGES / "palpites.py"),        title="Palpites",    icon="🎯")
-performance_pg = st.Page(str(PAGES / "recommendations.py"), title="Performance", icon="📈")
-model_pg       = st.Page(str(PAGES / "modelo.py"),          title="Modelo",      icon="🧠")
-analise_pg     = st.Page(str(PAGES / "analise.py"),         title="Análise",     icon="🔬")
-telegram_pg    = st.Page(str(PAGES / "telegram.py"),        title="Telegram",    icon="📨")
-admin_pg       = st.Page(str(PAGES / "admin.py"),           title="Usuários",    icon="👥")
+# ── Registro de páginas ────────────────────────────────────────────────────────
+home_pg        = st.Page(str(VIEWS / "home.py"),            title="Home",        icon="⚽", default=True)
+palpites_pg    = st.Page(str(VIEWS / "palpites.py"),        title="Palpites",    icon="🎯")
+performance_pg = st.Page(str(VIEWS / "recommendations.py"), title="Performance", icon="📈")
+model_pg       = st.Page(str(VIEWS / "modelo.py"),          title="Modelo",      icon="🧠")
+analise_pg     = st.Page(str(VIEWS / "analise.py"),         title="Análise",     icon="🔬")
+telegram_pg    = st.Page(str(VIEWS / "telegram.py"),        title="Telegram",    icon="📨")
+admin_pg       = st.Page(str(VIEWS / "admin.py"),           title="Usuários",    icon="👥")
 
-# ── Access matrix ──────────────────────────────────────────────────────────────
-#  viewer   → Home, Palpites
-#  analyst  → Home, Palpites, Performance, Modelo, Análise
-#  admin    → tudo + Telegram + Usuários
+# ── Matriz de acesso ───────────────────────────────────────────────────────────
 if role == "viewer":
     pages = [home_pg, palpites_pg]
 elif role == "analyst":

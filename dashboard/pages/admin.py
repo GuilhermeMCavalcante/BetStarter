@@ -119,9 +119,10 @@ with st.form("new_user_form"):
 if submitted:
     try:
         with SessionLocal() as db:
-            user = create_user(db, new_username, new_password, role=new_role,
-                               email=new_email or None)
-        st.success(f"Usuário '{user.username}' criado com perfil {ROLE_LABEL.get(user.role)}.")
+            u = create_user(db, new_username, new_password, role=new_role,
+                            email=new_email or None)
+            created_name, created_role = u.username, u.role  # captura dentro da sessão
+        st.success(f"Usuário '{created_name}' criado com perfil {ROLE_LABEL.get(created_role)}.")
         st.rerun()
     except ValueError as e:
         st.error(str(e))
