@@ -1,4 +1,5 @@
 import sys
+from datetime import date
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -24,21 +25,13 @@ league, season = validate_world_cup_scope()
 with st.sidebar:
     st.header("Configurações")
     bankroll = st.number_input("Bankroll (R$)", min_value=1.0, value=settings.default_bankroll, step=50.0)
-    days = st.slider("Janela futura (dias)", 1, 30, 7)
-    past_days = st.slider("Janela passada (dias)", 0, 30, 3)
-    limit = st.slider("Máx. linhas", 10, 200, 50)
-    st.divider()
-    date_filter = st.checkbox("Filtrar por data")
-    date_selected = st.date_input("Data") if date_filter else None
-    st.divider()
-    game_filter = st.checkbox("Filtrar por jogo")
     st.divider()
     st.caption(f"World Cup {season} · Liga {league}")
 
 if st.button("Atualizar & Analisar", type="primary", use_container_width=True):
     with st.spinner("Buscando jogos e odds, calculando recomendações..."):
         try:
-            result = run_pipeline(days=days, past_days=past_days)
+            result = run_pipeline(days=7, past_days=3)
             st.success(
                 f"Pipeline concluído — {result['fixtures']} jogos · "
                 f"{result['odds']} odds · {result['recommendations']} recomendações"
@@ -48,8 +41,10 @@ if st.button("Atualizar & Analisar", type="primary", use_container_width=True):
             st.stop()
     st.rerun()
 
+date_selected = st.date_input("Data", value=date.today())
+
 with SessionLocal() as db:
-    rows = list_recommendations(db, limit=limit, league=league, season=season)
+    rows = list_recommendations(db, limit=500, league=league, season=season)
     fixture_map = {
         f.id: f
         for f in db.query(Fixture)
@@ -87,19 +82,18 @@ for r in rows:
 df = pd.DataFrame(data)
 df["Data"] = pd.to_datetime(df["Data"])
 
-if date_filter and date_selected:
-    df = df[df["Data"].dt.date == date_selected]
-    if df.empty:
-        st.warning(f"Nenhuma recomendação para {date_selected}.")
-        st.stop()
+df = df[df["Data"].dt.date == date_selected]
+if df.empty:
+    st.warning(f"Nenhuma recomendação para {date_selected.strftime('%d/%m/%Y')}.")
+    st.stop()
 
-if game_filter:
-    partidas = sorted(df["Partida"].unique().tolist())
-    selected_games = st.multiselect("Filtrar por jogo", options=partidas, default=partidas)
-    if selected_games:
-        df = df[df["Partida"].isin(selected_games)]
+partidas = ["Todos os Jogos"] + sorted(df["Partida"].unique().tolist())
+jogo_selected = st.selectbox("Jogo", options=partidas)
+
+if jogo_selected != "Todos os Jogos":
+    df = df[df["Partida"] == jogo_selected]
     if df.empty:
-        st.warning("Nenhuma recomendação para os jogos selecionados.")
+        st.warning("Nenhuma recomendação para o jogo selecionado.")
         st.stop()
 
 resolved = df[df["Resultado"].isin(["WIN", "RED"])]
@@ -108,6 +102,8 @@ reds = len(resolved[resolved["Resultado"] == "RED"])
 n_resolved = wins + reds
 hit_rate = wins / n_resolved if n_resolved else 0
 total_pnl = resolved["P&L R$"].sum()
+
+st.divider()
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Recomendações", len(df))
