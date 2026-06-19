@@ -31,6 +31,8 @@ with st.sidebar:
     date_filter = st.checkbox("Filtrar por data")
     date_selected = st.date_input("Data") if date_filter else None
     st.divider()
+    game_filter = st.checkbox("Filtrar por jogo")
+    st.divider()
     st.caption(f"World Cup {season} · Liga {league}")
 
 if st.button("Atualizar & Analisar", type="primary", use_container_width=True):
@@ -89,6 +91,15 @@ if date_filter and date_selected:
     df = df[df["Data"].dt.date == date_selected]
     if df.empty:
         st.warning(f"Nenhuma recomendação para {date_selected}.")
+        st.stop()
+
+if game_filter:
+    partidas = sorted(df["Partida"].unique().tolist())
+    selected_games = st.multiselect("Filtrar por jogo", options=partidas, default=partidas)
+    if selected_games:
+        df = df[df["Partida"].isin(selected_games)]
+    if df.empty:
+        st.warning("Nenhuma recomendação para os jogos selecionados.")
         st.stop()
 
 resolved = df[df["Resultado"].isin(["WIN", "RED"])]
