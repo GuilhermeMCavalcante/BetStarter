@@ -23,10 +23,9 @@ st.caption("Statistical recommendation engine · Analytical tool, not financial 
 league, season = validate_world_cup_scope()
 
 with st.sidebar:
-    st.header("Configurações")
-    bankroll = st.number_input("Bankroll (R$)", min_value=1.0, value=settings.default_bankroll, step=50.0)
-    st.divider()
     st.caption(f"World Cup {season} · Liga {league}")
+
+bankroll = settings.default_bankroll
 
 if st.button("Atualizar & Analisar", type="primary", use_container_width=True):
     with st.spinner("Buscando jogos e odds, calculando recomendações..."):

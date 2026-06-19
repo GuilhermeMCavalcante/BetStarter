@@ -143,11 +143,18 @@ def generate_recommendations(db: Session, min_ev: float | None = None, league: i
             edge = probability - implied
             ev = (probability * odd.odd) - 1
 
-            # Only filter out signals where the model gives less than 50% probability.
-            # EV, edge and grade remain visible so the user can decide which to enter.
             if probability < 0.50:
                 audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
                       f"Probability below 50% ({probability:.1%}). {output.reason}")
+                continue
+
+            # Plausibility check: if the model's probability is more than 4x the
+            # bookmaker's implied probability, the odds data is likely mismatched or
+            # erroneous rather than genuine edge.
+            if implied > 0 and (probability / implied) > 4.0:
+                audit(db, fixture, odd, probability, implied, edge, ev, "REJECTED",
+                      f"Implausible ratio model/implied={probability/implied:.1f}x "
+                      f"(model={probability:.1%}, implied={implied:.1%}). Likely data issue.")
                 continue
 
             values = {
@@ -178,7 +185,42 @@ def generate_recommendations(db: Session, min_ev: float | None = None, league: i
             created += 1
 
     db.commit()
+    created -= _deduplicate_nested_bets(db)
     return created
+
+
+def _deduplicate_nested_bets(db: Session) -> int:
+    """For the same fixture+market+direction, keep only the highest-EV recommendation.
+
+    Over 8.5 and Over 9.5 on the same fixture are nested: if 9.5 hits, 8.5 also hits.
+    Keeping both wastes capital. We discard all but the best EV per direction.
+    """
+    from collections import defaultdict
+
+    all_recs = db.query(Recommendation).all()
+    groups: dict[tuple, list] = defaultdict(list)
+
+    for rec in all_recs:
+        if rec.selection.startswith("Over"):
+            direction = "Over"
+        elif rec.selection.startswith("Under"):
+            direction = "Under"
+        else:
+            continue
+        groups[(rec.fixture_id, rec.market, direction)].append(rec)
+
+    removed = 0
+    for recs in groups.values():
+        if len(recs) <= 1:
+            continue
+        best = max(recs, key=lambda r: r.expected_value)
+        for rec in recs:
+            if rec.id != best.id:
+                db.delete(rec)
+                removed += 1
+
+    db.commit()
+    return removed
 
 
 def list_recommendations(db: Session, limit: int = 50, league: int | None = None, season: int | None = None):
